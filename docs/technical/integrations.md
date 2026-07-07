@@ -81,6 +81,19 @@ On OrbStack, both `otrs` and `keycloak` services often share the same external I
 
 Restart both deployments after changing the config map.
 
+Keycloak realm import (`--import-realm`) only creates the realm on first startup. If the `otrs-ce` client still has wildcard redirect URIs, either run the sync script or restart OTRS so the bootstrap init container updates the client:
+
+```bash
+kubectl apply -k k8s/
+kubectl -n otrs delete pod -l app=otrs
+```
+
+The OTRS init container runs `sync-keycloak-client.sh`, which sets the exact redirect URI:
+
+```text
+http://<OTRS_FQDN>/otrs-auth/login
+```
+
 ### Default Keycloak Credentials
 
 - Admin console: `admin` / `keycloak-admin`
@@ -102,3 +115,21 @@ Configure the Keycloak client redirect URI (exact match required in Keycloak 26;
 ```text
 http://<OTRS_IP>/otrs-auth/login
 ```
+
+## Troubleshooting
+
+### "Module Kernel::Modules::AgentDashboard not registered"
+
+The deployed SysConfig cache file `Kernel/Config/Files/ZZZAAuto.pm` was missing from the Kubernetes kernel volume. Bootstrap wrote it under `/opt/otrs/Kernel` in the init container, but the running pod only mounts the copied volume at the same path.
+
+Restart the pod after upgrading, or run `ConfigurationDeploySync` in the OTRS container. The entrypoint also auto-syncs when the file is missing.
+
+### "redirected you too many times"
+
+This usually means the OIDC callback failed and the handler redirected back to `/otrs-auth/login`. Keycloak SSO then immediately returns a new authorization code, causing an infinite loop.
+
+Callback failures must show an error page instead of redirecting to `LoginURL`. If you still see a loop after upgrading, clear browser cookies for the OTRS and Keycloak hosts and try again.
+
+### "Missing form parameter: grant_type"
+
+The token exchange POST to Keycloak must send `application/x-www-form-urlencoded` data. `LWP::UserAgent->post($url, $form_hashref)` works; unpacking the hash with `%{...}` as the second argument does not and Keycloak rejects the request.

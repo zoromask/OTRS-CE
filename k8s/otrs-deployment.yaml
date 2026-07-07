@@ -45,6 +45,9 @@ spec:
                 cp -a /opt/otrs/var/. /var-data/
               fi
               cp -a /opt/otrs/Kernel/. /kernel-data/
+              if [ -x /scripts/sync-keycloak-client.sh ]; then
+                /scripts/sync-keycloak-client.sh
+              fi
               OTRS_KERNEL_DIR=/kernel-data perl /opt/otrs/bin/bootstrap-k8s.pl
               chown -R otrs:apache /kernel-data /var-data
           envFrom:
@@ -73,6 +76,8 @@ spec:
               mountPath: /kernel-data
             - name: otrs-var
               mountPath: /var-data
+            - name: otrs-scripts
+              mountPath: /scripts
       containers:
         - name: otrs
           image: otrs-ce:6.0.41

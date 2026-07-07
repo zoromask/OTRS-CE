@@ -83,6 +83,8 @@ if ( !$DeploymentResult{Success} ) {
     die "Failed to deploy OTRS configuration.\n";
 }
 
+_sync_deployed_config_cache($KernelDir);
+
 _configure_keycloak_oidc($SysConfigObject);
 
 print "OTRS bootstrap completed successfully.\n";
@@ -134,6 +136,8 @@ sub _configure_keycloak_oidc {
 
     die "Failed to deploy Keycloak OIDC settings.\n" if !$DeploymentResult{Success};
 
+    _sync_deployed_config_cache($KernelDir);
+
     _write_keycloak_oidc_config_file(
         FQDN         => $FQDN,
         HttpType     => $HttpType,
@@ -149,6 +153,35 @@ sub _configure_keycloak_oidc {
     );
 
     print "Keycloak OIDC login enabled.\n";
+
+    return 1;
+}
+
+sub _sync_deployed_config_cache {
+    my ($KernelDir) = @_;
+
+    my $Home = '/opt/otrs';
+    my $SourceDir = "$Home/Kernel/Config/Files";
+    my $TargetDir = "$KernelDir/Config/Files";
+
+    for my $File (qw(ZZZAAuto.pm)) {
+        my $Source = "$SourceDir/$File";
+        my $Target = "$TargetDir/$File";
+
+        next if !-f $Source;
+
+        if ( $Source ne $Target ) {
+            open my $In, '<', $Source or die "Can't read $Source: $!";
+            my $Content = do { local $/; <$In> };
+            close $In;
+
+            open my $Out, '>:utf8', $Target or die "Can't write $Target: $!";
+            print {$Out} $Content;
+            close $Out;
+
+            print "Synced deployed configuration cache to $Target\n";
+        }
+    }
 
     return 1;
 }

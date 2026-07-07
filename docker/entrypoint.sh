@@ -31,6 +31,18 @@ write_apache_oidc_env() {
 
 write_apache_oidc_env
 
+# SysConfig deploy writes ZZZAAuto.pm under /opt/otrs/Kernel during bootstrap, but
+# Kubernetes mounts the kernel volume over that path. Re-sync from the database when
+# the deployed cache file is missing.
+if [[ -f /opt/otrs/Kernel/Config.pm ]] && [[ ! -f /opt/otrs/Kernel/Config/Files/ZZZAAuto.pm ]]; then
+    echo "Missing ZZZAAuto.pm on kernel volume; syncing SysConfig from database..."
+    su -s /bin/bash -c 'perl -I/opt/otrs -I/opt/otrs/Kernel/cpan-lib -I/opt/otrs/Custom -MKernel::System::ObjectManager -e '"'"'
+        local \$Kernel::OM = Kernel::System::ObjectManager->new();
+        my \$Success = \$Kernel::OM->Get(q{Kernel::System::SysConfig})->ConfigurationDeploySync();
+        exit \$Success ? 0 : 1;
+    '"'"'' otrs || echo "Warning: SysConfig sync failed."
+fi
+
 # Start OTRS background services when the application is already configured.
 if [[ -f /opt/otrs/Kernel/Config.pm ]] && grep -q "Database" /opt/otrs/Kernel/Config.pm; then
     /opt/otrs/bin/otrs.Daemon.pl start || true

@@ -2,6 +2,10 @@
 
 ### Fixed
 
+- OIDC token exchange now posts form data as a hash reference to LWP (fixes `Missing form parameter: grant_type`)
+- OIDC callback errors now show an error page instead of redirecting to `/otrs-auth/login` (fixes infinite redirect loop with Keycloak SSO)
+- Kubernetes bootstrap now copies `ZZZAAuto.pm` to the kernel volume (fixes missing `AgentDashboard` and other frontend modules after OIDC login)
+- OTRS entrypoint syncs SysConfig from the database when `ZZZAAuto.pm` is missing on the kernel volume
 - OIDC logout now sends `id_token_hint` to Keycloak via `/otrs-auth/logout`
 - OIDC userinfo request now sends the Bearer token correctly (`Header` vs `Headers` in WebUserAgent)
 

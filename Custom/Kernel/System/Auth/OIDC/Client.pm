@@ -9,9 +9,11 @@ use warnings;
 
 use JSON::XS;
 use MIME::Base64 qw(decode_base64);
+use LWP::UserAgent;
 
 our @ObjectDependencies = (
     'Kernel::Config',
+    'Kernel::System::Encode',
     'Kernel::System::Log',
     'Kernel::System::WebUserAgent',
 );
@@ -34,6 +36,7 @@ sub new {
     $Self->{Scope}         = $ConfigObject->Get('AuthModule::OIDC::Scope')         || 'openid profile email';
     $Self->{UserAttribute} = $ConfigObject->Get('AuthModule::OIDC::UserAttribute') || 'preferred_username';
     $Self->{UserRegExp}    = $ConfigObject->Get('AuthModule::OIDC::UserMappingRegExp') || '';
+    $Self->{LastError}     = '';
 
     return $Self;
 }
@@ -106,38 +109,64 @@ sub GetLogoutURL {
 sub ExchangeCode {
     my ( $Self, %Param ) = @_;
 
+    $Self->{LastError} = '';
+
     my $Code = $Param{Code} || '';
-    return if !$Code;
+    if ( !$Code ) {
+        $Self->{LastError} = 'Missing authorization code.';
+        return;
+    }
 
     my %TokenResponse = $Self->_TokenRequest(
         GrantType => 'authorization_code',
         Code      => $Code,
     );
 
-    return if !%TokenResponse;
-    return if !$TokenResponse{access_token};
+    if ( !%TokenResponse ) {
+        $Self->{LastError} ||= 'Keycloak token exchange failed.';
+        return;
+    }
+    if ( !$TokenResponse{access_token} ) {
+        $Self->{LastError} = 'Keycloak did not return an access token.';
+        return;
+    }
+
+    my %IDTokenClaims = $Self->_DecodeIDTokenPayload(
+        IDToken => $TokenResponse{id_token} || '',
+    );
 
     my %UserInfo = $Self->_GetUserInfo(
         AccessToken => $TokenResponse{access_token},
     );
-
-    return if !%UserInfo;
 
     if ( $TokenResponse{id_token} ) {
         my $Valid = $Self->_ValidateIDToken(
             IDToken => $TokenResponse{id_token},
             Nonce   => $Param{Nonce} || '',
         );
-        return if !$Valid;
+        if ( !$Valid ) {
+            $Self->{LastError} ||= 'Invalid ID token.';
+            if ( !%UserInfo && !%IDTokenClaims ) {
+                return;
+            }
+        }
     }
 
     my $Login = $UserInfo{ $Self->{UserAttribute} }
         || $UserInfo{preferred_username}
         || $UserInfo{email}
+        || $IDTokenClaims{ $Self->{UserAttribute} }
+        || $IDTokenClaims{preferred_username}
+        || $IDTokenClaims{email}
         || '';
 
     if ( $Self->{UserRegExp} && $Login ) {
         $Login =~ s/$Self->{UserRegExp}/$1/;
+    }
+
+    if ( !$Login ) {
+        $Self->{LastError} ||= 'No username claim found in the Keycloak token.';
+        return;
     }
 
     return {
@@ -164,19 +193,54 @@ sub _TokenRequest {
         $Data{redirect_uri} = $Self->{RedirectURI};
     }
 
-    my %Response = $Kernel::OM->Get('Kernel::System::WebUserAgent')->Request(
+    my %Response = $Self->_HTTPPost(
         URL  => $URL,
-        Type => 'POST',
         Data => \%Data,
     );
 
-    return if !$Response{Content};
+    return if !%Response;
     return if $Response{Status} !~ /^200/;
 
     my $JSON = eval { decode_json( ${ $Response{Content} } ) };
-    return if !$JSON || ref $JSON ne 'HASH';
+    if ( !$JSON || ref $JSON ne 'HASH' ) {
+        $Self->{LastError} = 'Invalid token response from Keycloak.';
+        return;
+    }
 
     return %{$JSON};
+}
+
+sub _HTTPPost {
+    my ( $Self, %Param ) = @_;
+
+    my $FormData = $Param{Data} || {};
+    $FormData = {} if ref $FormData ne 'HASH';
+
+    my $UserAgent = LWP::UserAgent->new( timeout => 30 );
+    # LWP requires a hash reference here; unpacking with %{...} drops grant_type.
+    my $Response  = $UserAgent->post( $Param{URL}, $FormData );
+
+    if ( !$Response->is_success() ) {
+        my $Body = $Response->decoded_content() || '';
+        if ( $Body =~ /"error_description"\s*:\s*"([^"]+)"/ ) {
+            $Self->{LastError} = $1;
+        }
+        elsif ( $Body =~ /"error"\s*:\s*"([^"]+)"/ ) {
+            $Self->{LastError} = $1;
+        }
+        else {
+            $Self->{LastError} = $Response->status_line();
+        }
+        return;
+    }
+
+    my $Content = $Response->decoded_content();
+    $Kernel::OM->Get('Kernel::System::Encode')->EncodeInput( \$Content );
+
+    return (
+        Status  => $Response->status_line(),
+        Content => \$Content,
+    );
 }
 
 sub _GetUserInfo {
@@ -193,7 +257,10 @@ sub _GetUserInfo {
     );
 
     return if !$Response{Content};
-    return if $Response{Status} !~ /^200/;
+    if ( $Response{Status} !~ /^200/ ) {
+        $Self->{LastError} ||= 'Keycloak userinfo request failed.';
+        return;
+    }
 
     my $JSON = eval { decode_json( ${ $Response{Content} } ) };
     return if !$JSON || ref $JSON ne 'HASH';
@@ -201,7 +268,7 @@ sub _GetUserInfo {
     return %{$JSON};
 }
 
-sub _ValidateIDToken {
+sub _DecodeIDTokenPayload {
     my ( $Self, %Param ) = @_;
 
     my $IDToken = $Param{IDToken} || '';
@@ -217,12 +284,46 @@ sub _ValidateIDToken {
     my $PayloadJSON = eval { decode_json( decode_base64($PayloadPart) ) };
     return if !$PayloadJSON || ref $PayloadJSON ne 'HASH';
 
+    return %{$PayloadJSON};
+}
+
+sub _ValidateIDToken {
+    my ( $Self, %Param ) = @_;
+
+    my %PayloadJSON = $Self->_DecodeIDTokenPayload(
+        IDToken => $Param{IDToken} || '',
+    );
+    return if !%PayloadJSON;
+
     my $Now = time();
 
-    return if $PayloadJSON->{iss} && $PayloadJSON->{iss} ne $Self->{Issuer};
-    return if $PayloadJSON->{aud} && $PayloadJSON->{aud} ne $Self->{ClientID};
-    return if $PayloadJSON->{exp} && $PayloadJSON->{exp} < $Now;
-    return if $Param{Nonce} && $PayloadJSON->{nonce} && $PayloadJSON->{nonce} ne $Param{Nonce};
+    if ( $PayloadJSON{iss} && $PayloadJSON{iss} ne $Self->{Issuer} ) {
+        $Self->{LastError} = 'ID token issuer mismatch.';
+        return;
+    }
+
+    if ( $PayloadJSON{aud} ) {
+        my $AudienceOK = ref $PayloadJSON{aud} eq 'ARRAY'
+            ? scalar grep { $_ eq $Self->{ClientID} } @{ $PayloadJSON{aud} }
+            : $PayloadJSON{aud} eq $Self->{ClientID};
+        if ( !$AudienceOK ) {
+            $Self->{LastError} = 'ID token audience mismatch.';
+            return;
+        }
+    }
+
+    if ( $PayloadJSON{exp} && $PayloadJSON{exp} < $Now ) {
+        $Self->{LastError} = 'ID token has expired.';
+        return;
+    }
+
+    if (   $Param{Nonce}
+        && $PayloadJSON{nonce}
+        && $PayloadJSON{nonce} ne $Param{Nonce} )
+    {
+        $Self->{LastError} = 'ID token nonce mismatch.';
+        return;
+    }
 
     return 1;
 }

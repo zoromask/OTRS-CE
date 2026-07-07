@@ -97,7 +97,9 @@ my $AuthResult = $OIDCClient->ExchangeCode(
 );
 
 if ( !$AuthResult || !$AuthResult->{Login} ) {
-    _Error('Could not resolve an OTRS user from the Keycloak account.');
+    my $Detail = $OIDCClient->{LastError}
+        || 'Could not resolve an OTRS user from the Keycloak account.';
+    _Error($Detail);
 }
 
 my $Login = $AuthResult->{Login};
@@ -162,8 +164,15 @@ if ( $AuthResult->{IDToken} ) {
 
 $RequestedURL = $ParamObject->GetCookie( Key => 'OTRSOIDCRequestedURL' ) || $RequestedURL;
 
+my $HttpType    = $ConfigObject->Get('HttpType')    || 'http';
+my $FQDN        = $ConfigObject->Get('FQDN')        || 'localhost';
+my $ScriptAlias = $ConfigObject->Get('ScriptAlias') || 'otrs/';
+$ScriptAlias .= '/' if $ScriptAlias !~ m{/\z};
+
+my $IndexURL = "$HttpType://$FQDN/$ScriptAlias" . "index.pl?$RequestedURL";
+
 print $LayoutObject->Redirect(
-    OP => "index.pl?$RequestedURL",
+    ExtURL => $IndexURL,
 );
 
 exit 0;
@@ -177,6 +186,10 @@ sub _Error {
     );
 
     my $LayoutObject = $Kernel::OM->Get('Kernel::Output::HTML::Layout');
+
+    # Show the error page instead of redirecting back to LoginURL. A redirect on
+    # callback failure caused an infinite loop because Keycloak SSO immediately
+    # issued a new authorization code.
     print $LayoutObject->ErrorScreen(
         Message => $Message,
     );

@@ -27,3 +27,63 @@ data:
 
     echo "Timed out waiting for MySQL."
     exit 1
+  sync-keycloak-client.sh: |
+    #!/bin/bash
+    # Sync Keycloak otrs-ce client redirect URIs from OTRS_FQDN.
+    set -euo pipefail
+    KEYCLOAK_URL="${KEYCLOAK_URL:-http://keycloak:8080}"
+    KEYCLOAK_REALM="${KEYCLOAK_REALM:-otrs}"
+    KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-otrs-ce}"
+    KEYCLOAK_ADMIN_USER="${KEYCLOAK_ADMIN_USER:-admin}"
+    KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-keycloak-admin}"
+    OTRS_FQDN="${OTRS_FQDN:-localhost}"
+    OTRS_HTTP_TYPE="${OTRS_HTTP_TYPE:-http}"
+    OTRS_SCRIPT_ALIAS="${OTRS_SCRIPT_ALIAS:-otrs/}"
+    MAX_ATTEMPTS="${MAX_ATTEMPTS:-60}"
+    SLEEP_SECONDS="${SLEEP_SECONDS:-5}"
+    REDIRECT_URI="${OTRS_HTTP_TYPE}://${OTRS_FQDN}/otrs-auth/login"
+    LOGOUT_REDIRECT_URI="${OTRS_HTTP_TYPE}://${OTRS_FQDN}/${OTRS_SCRIPT_ALIAS%/}/index.pl"
+    echo "Waiting for Keycloak at ${KEYCLOAK_URL}..."
+    for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+        if curl -sf "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}" >/dev/null; then
+            echo "Keycloak is ready."
+            break
+        fi
+        echo "Attempt ${attempt}/${MAX_ATTEMPTS}: Keycloak not ready yet."
+        sleep "${SLEEP_SECONDS}"
+        if [[ "${attempt}" -eq "${MAX_ATTEMPTS}" ]]; then
+            echo "Timed out waiting for Keycloak."
+            exit 1
+        fi
+    done
+    echo "Syncing redirect URI: ${REDIRECT_URI}"
+    TOKEN="$(curl -sf -X POST "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
+        -d "client_id=admin-cli" -d "username=${KEYCLOAK_ADMIN_USER}" \
+        -d "password=${KEYCLOAK_ADMIN_PASSWORD}" -d "grant_type=password" \
+        | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+    [[ -n "${TOKEN}" ]] || { echo "Failed to obtain Keycloak admin token."; exit 1; }
+    CLIENT_UUID="$(curl -sf "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${KEYCLOAK_CLIENT_ID}" \
+        -H "Authorization: Bearer ${TOKEN}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+    [[ -n "${CLIENT_UUID}" ]] || { echo "Keycloak client ${KEYCLOAK_CLIENT_ID} not found."; exit 1; }
+    curl -sf "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${CLIENT_UUID}" \
+        -H "Authorization: Bearer ${TOKEN}" > /tmp/keycloak-client.json
+    python3 - <<PY
+    import json
+    redirect_uri = "${REDIRECT_URI}"
+    logout_redirect_uri = "${LOGOUT_REDIRECT_URI}"
+    web_origin = "${OTRS_HTTP_TYPE}://${OTRS_FQDN}"
+    with open("/tmp/keycloak-client.json", encoding="utf-8") as handle:
+        client = json.load(handle)
+    client["redirectUris"] = [redirect_uri]
+    client["webOrigins"] = [web_origin, "+"]
+    client["attributes"] = client.get("attributes") or {}
+    client["attributes"]["post.logout.redirect.uris"] = logout_redirect_uri
+    with open("/tmp/keycloak-client-updated.json", "w", encoding="utf-8") as handle:
+        json.dump(client, handle)
+    PY
+    HTTP_CODE="$(curl -sf -o /dev/null -w "%{http_code}" -X PUT \
+        "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${CLIENT_UUID}" \
+        -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+        --data-binary @/tmp/keycloak-client-updated.json)"
+    [[ "${HTTP_CODE}" == "204" ]] || { echo "Failed to update Keycloak client (HTTP ${HTTP_CODE})."; exit 1; }
+    echo "Keycloak client ${KEYCLOAK_CLIENT_ID} updated successfully."
