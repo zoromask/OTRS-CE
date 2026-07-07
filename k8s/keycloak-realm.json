@@ -1,0 +1,58 @@
+{
+  "realm": "otrs",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "otrs-ce",
+      "name": "OTRS Community Edition",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "otrs-keycloak-secret",
+      "redirectUris": [
+        "http://*/otrs/oidc-login.pl",
+        "http://*/*/otrs/oidc-login.pl"
+      ],
+      "webOrigins": [
+        "http://*",
+        "+"
+      ],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "post.logout.redirect.uris": "http://*/otrs/index.pl##http://*/*/otrs/index.pl"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "root@localhost",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "OTRS",
+      "email": "root@localhost",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Admin@123",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

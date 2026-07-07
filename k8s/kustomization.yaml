@@ -12,5 +12,9 @@ resources:
   - mysql-service.yaml
   - otrs-pvc.yaml
   - otrs-configmap.yaml
+  - otrs-oidc-configmap.yaml
   - otrs-deployment.yaml
   - otrs-service.yaml
+  - keycloak-realm-configmap.yaml
+  - keycloak-deployment.yaml
+  - keycloak-service.yaml

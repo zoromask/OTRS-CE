@@ -47,6 +47,9 @@ spec:
               cp -a /opt/otrs/Kernel/. /kernel-data/
               OTRS_KERNEL_DIR=/kernel-data perl /opt/otrs/bin/bootstrap-k8s.pl
               chown -R otrs:apache /kernel-data /var-data
+          envFrom:
+            - configMapRef:
+                name: otrs-oidc-config
           env:
             - name: OTRS_DB_HOST
               value: mysql
@@ -77,6 +80,9 @@ spec:
           ports:
             - containerPort: 80
               name: http
+          envFrom:
+            - configMapRef:
+                name: otrs-oidc-config
           env:
             - name: OTRS_DB_HOST
               value: mysql
