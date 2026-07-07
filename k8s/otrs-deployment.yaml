@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otrs
+  namespace: otrs
+  labels:
+    app: otrs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otrs
+  template:
+    metadata:
+      labels:
+        app: otrs
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: mysql:9.7
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /scripts/wait-for-mysql.sh
+          env:
+            - name: MYSQL_HOST
+              value: mysql
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+          volumeMounts:
+            - name: otrs-scripts
+              mountPath: /scripts
+        - name: bootstrap-otrs
+          image: otrs-ce:6.0.41
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              if [ ! -d /var-data/httpd ]; then
+                cp -a /opt/otrs/var/. /var-data/
+              fi
+              cp -a /opt/otrs/Kernel/. /kernel-data/
+              OTRS_KERNEL_DIR=/kernel-data perl /opt/otrs/bin/bootstrap-k8s.pl
+              chown -R otrs:apache /kernel-data /var-data
+          env:
+            - name: OTRS_DB_HOST
+              value: mysql
+            - name: OTRS_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_DATABASE
+            - name: OTRS_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: OTRS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+          volumeMounts:
+            - name: otrs-kernel
+              mountPath: /kernel-data
+            - name: otrs-var
+              mountPath: /var-data
+      containers:
+        - name: otrs
+          image: otrs-ce:6.0.41
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          env:
+            - name: OTRS_DB_HOST
+              value: mysql
+          readinessProbe:
+            httpGet:
+              path: /otrs/index.pl
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /otrs/index.pl
+              port: 80
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: otrs-kernel
+              mountPath: /opt/otrs/Kernel
+            - name: otrs-var
+              mountPath: /opt/otrs/var
+      volumes:
+        - name: otrs-scripts
+          configMap:
+            name: otrs-scripts
+            defaultMode: 0755
+        - name: otrs-kernel
+          emptyDir: {}
+        - name: otrs-var
+          persistentVolumeClaim:
+            claimName: otrs-var

@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+MYSQL_HOST="${MYSQL_HOST:-mysql}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-60}"
+SLEEP_SECONDS="${SLEEP_SECONDS:-5}"
+
+echo "Waiting for MySQL at ${MYSQL_HOST}:${MYSQL_PORT}..."
+
+for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+    if mysqladmin ping -h "${MYSQL_HOST}" -P "${MYSQL_PORT}" -u root -p"${MYSQL_ROOT_PASSWORD}" --silent; then
+        echo "MySQL is ready."
+        exit 0
+    fi
+
+    echo "Attempt ${attempt}/${MAX_ATTEMPTS}: MySQL not ready yet."
+    sleep "${SLEEP_SECONDS}"
+done
+
+echo "Timed out waiting for MySQL."
+exit 1

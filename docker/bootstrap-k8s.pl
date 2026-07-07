@@ -1,0 +1,187 @@
+#!/usr/bin/env perl
+# --
+# Bootstrap OTRS database and configuration for Kubernetes deployments.
+# --
+
+use strict;
+use warnings;
+
+use File::Basename;
+use FindBin qw($RealBin);
+use lib dirname($RealBin);
+use lib dirname($RealBin) . '/Kernel/cpan-lib';
+use lib dirname($RealBin) . '/Custom';
+
+use Kernel::System::ObjectManager;
+
+local $Kernel::OM = Kernel::System::ObjectManager->new();
+
+my $Home = '/opt/otrs';
+my $KernelDir = $ENV{OTRS_KERNEL_DIR} || "$Home/Kernel";
+
+my %Env = (
+    DatabaseHost => $ENV{OTRS_DB_HOST}     || 'mysql',
+    Database     => $ENV{OTRS_DB_NAME}     || 'otrs',
+    DatabaseUser => $ENV{OTRS_DB_USER}     || 'otrs',
+    DatabasePw   => $ENV{OTRS_DB_PASSWORD} || '',
+    DBType       => 'mysql',
+);
+
+for my $Key (qw(DatabaseHost Database DatabaseUser DatabasePw)) {
+    die "Missing required value for $Key\n" if !length $Env{$Key};
+}
+
+my $ConfigFile = "$KernelDir/Config.pm";
+_update_config_pm( \%Env );
+
+my $DSN = "DBI:mysql:database=$Env{Database};host=$Env{DatabaseHost};mysql_ssl=1;mysql_ssl_verify_server_cert=0;";
+
+$Kernel::OM->ObjectsDiscard( Objects => ['Kernel::System::DB'] );
+$Kernel::OM->ObjectParamAdd(
+    'Kernel::System::DB' => {
+        DatabaseDSN  => $DSN,
+        DatabaseUser => $Env{DatabaseUser},
+        DatabasePw   => $Env{DatabasePw},
+        Type         => $Env{DBType},
+    },
+);
+
+my $DBObject = $Kernel::OM->Get('Kernel::System::DB');
+my $MainObject = $Kernel::OM->Get('Kernel::System::Main');
+
+if ( _database_is_initialized($DBObject) ) {
+    print "Database already initialized, skipping schema import.\n";
+}
+else {
+    print "Initializing OTRS database schema...\n";
+    _import_schema( $DBObject, $MainObject );
+    _set_admin_password();
+}
+
+print "Rebuilding OTRS system configuration...\n";
+my $SysConfigObject = $Kernel::OM->Get('Kernel::System::SysConfig');
+
+if (
+    !$SysConfigObject->ConfigurationXML2DB(
+        UserID  => 1,
+        Force   => 1,
+        CleanUp => 0,
+    )
+    )
+{
+    die "Failed to import XML configuration into database.\n";
+}
+
+my %DeploymentResult = $SysConfigObject->ConfigurationDeploy(
+    Comments    => 'Kubernetes bootstrap deployment',
+    AllSettings => 1,
+    UserID      => 1,
+    Force       => 1,
+);
+
+if ( !$DeploymentResult{Success} ) {
+    die "Failed to deploy OTRS configuration.\n";
+}
+
+print "OTRS bootstrap completed successfully.\n";
+exit 0;
+
+sub _database_is_initialized {
+    my ($DBObject) = @_;
+
+    my $Exists = eval {
+        return $DBObject->Prepare(
+            SQL   => 'SELECT id FROM users WHERE login = ?',
+            Bind  => [ \ 'root@localhost' ],
+            Limit => 1,
+        );
+    };
+
+    return 0 if !$Exists;
+
+    my @Data = $DBObject->FetchrowArray();
+    return scalar @Data ? 1 : 0;
+}
+
+sub _import_schema {
+    my ( $DBObject, $MainObject ) = @_;
+
+    my $DirOfSQLFiles = "$Home/scripts/database";
+
+    my @SQLPost;
+    for my $SchemaFile (qw(otrs-schema otrs-initial_insert)) {
+        my $XML = $MainObject->FileRead(
+            Directory => $DirOfSQLFiles,
+            Filename  => $SchemaFile . '.xml',
+        ) || die "Could not read $SchemaFile.xml\n";
+
+        my @XMLArray = $Kernel::OM->Get('Kernel::System::XML')->XMLParse(
+            String => $XML,
+        );
+
+        my @SQL = $DBObject->SQLProcessor(
+            Database => \@XMLArray,
+        );
+
+        @SQLPost = $DBObject->SQLProcessorPost() if $SchemaFile eq 'otrs-schema';
+
+        for my $SQL (@SQL) {
+            $DBObject->Do( SQL => $SQL ) || die "Failed to execute schema SQL.\n";
+        }
+    }
+
+    for my $SQL (@SQLPost) {
+        $DBObject->Do( SQL => $SQL ) || die "Failed to execute post schema SQL.\n";
+    }
+
+    return 1;
+}
+
+sub _set_admin_password {
+    my $Password = $ENV{OTRS_ADMIN_PASSWORD} || 'Admin@123';
+    my $UserObject = $Kernel::OM->Get('Kernel::System::User');
+
+    my $Result = $UserObject->SetPassword(
+        UserLogin => 'root@localhost',
+        PW        => $Password,
+    );
+
+    die "Failed to set default admin password.\n" if !$Result;
+
+    print "Default admin password configured for root\@localhost.\n";
+
+    return 1;
+}
+
+sub _update_config_pm {
+    my ($Env) = @_;
+
+    open my $In, '<', $ConfigFile or die "Can't read $ConfigFile: $!";
+    my @Lines = <$In>;
+    close $In;
+
+    my %Replacements = (
+        DatabaseHost => "'$Env->{DatabaseHost}'",
+        Database     => "\"$Env->{Database}\"",
+        DatabaseUser => "\"$Env->{DatabaseUser}\"",
+        DatabasePw   => "'$Env->{DatabasePw}'",
+        DatabaseDSN  => "'DBI:mysql:database=$Env->{Database};host=$Env->{DatabaseHost};mysql_ssl=1;mysql_ssl_verify_server_cert=0;'",
+    );
+
+    for my $Line (@Lines) {
+        next if $Line =~ /^\s*#/;
+
+        for my $Key ( sort { length($b) <=> length($a) } keys %Replacements ) {
+            if ( $Line =~ /^\s*\$Self->\{(?:'|")?$Key(?:'|")?\}\s*=/ ) {
+                $Line = "    \$Self->{'$Key'} = $Replacements{$Key};\n";
+                last;
+            }
+        }
+    }
+
+    open my $Out, '>:utf8', $ConfigFile or die "Can't write $ConfigFile: $!";
+    print {$Out} @Lines;
+    close $Out;
+
+    return 1;
+}

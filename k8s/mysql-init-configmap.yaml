@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init
+  namespace: otrs
+data:
+  01-otrs-auth.sql: |
+    ALTER USER 'otrs'@'%' IDENTIFIED WITH caching_sha2_password BY 'otrs-db-secret' REQUIRE NONE;
+    FLUSH PRIVILEGES;

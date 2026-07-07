@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.md
+docs/
+.vscode
+.idea
+var/sessions/*
+var/article/*
+var/spool/*
+var/log/*
+var/tmp/*
+Kernel/Config.pm
