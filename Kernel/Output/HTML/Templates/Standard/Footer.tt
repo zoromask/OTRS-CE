@@ -1,0 +1,133 @@
+# --
+# Copyright (C) 2001-2020 OTRS AG, https://otrs.com/
+# Copyright (C) 2021-2023 Centuran Consulting, https://centuran.com/
+# --
+# This software comes with ABSOLUTELY NO WARRANTY. For details, see
+# the enclosed file COPYING for license information (GPL). If you
+# did not receive this file, see https://www.gnu.org/licenses/gpl-3.0.txt.
+# --
+
+<div id="Footer" class="ARIARoleContentinfo">
+[% IF !Config("Secure::DisableBanner") %]
+    <a href="https://otrscommunityedition.com/" target="_blank"
+        title="[% Config("Product") | html %][% IF !Data.IsLoginPage %] [% Config("Version") | html %][% END %]">
+        [% Translate("Powered by %s", "((OTRS)) Community Edition") | html %]
+    </a>
+    <br>
+
+    <a href="https://www.centuran.com/" target="_blank">
+        <img src="[% Config("Frontend::WebPath") %]skins/Agent/default/img/logo-centuran.png"
+            alt="Centuran Consulting" title="Centuran Consulting" />
+    </a>
+[% END %]
+</div>
+
+[% IF Data.UseModern %]
+</v-app></div>
+[% END %]
+
+[% InsertTemplate("FooterJS.tt") %]
+
+    </div><!-- end AppWrapper -->
+
+<script>
+(function () {
+
+if (!window.__use_new_agent_ui)
+    return;
+
+if (window.__extraComponents) {
+    window.__extraComponents.forEach(function (component) {
+        Vue.component(component.replace(/.*\//, ''),
+            httpVueLoader('[% Config("Frontend::JavaScriptPath") | html %][% Data.JSDirectory | html %]centuran/' + component + '.vue'));
+    });
+}
+
+new Vue({
+    el: '#vue-app',
+    vuetify: new Vuetify({
+        theme: { disable: true }
+    }),
+    components: {
+        'colorpicker':    httpVueLoader('[% Config("Frontend::JavaScriptPath") | html %][% Data.JSDirectory | html %]centuran/colorpicker.vue'),
+        'datetimepicker': httpVueLoader('[% Config("Frontend::JavaScriptPath") | html %][% Data.JSDirectory | html %]centuran/datetimepicker.vue'),
+        'toggleswitch':   httpVueLoader('[% Config("Frontend::JavaScriptPath") | html %][% Data.JSDirectory | html %]centuran/toggleswitch.vue')
+    },
+    data() {
+        return {
+            document: document,
+            console: console,
+            jQuery: window.jQuery
+        };
+    }
+});
+
+// FIXME: This is an ugly-ish workaround for an issue when unset select fields
+// suddenly have the first option pre-selected after Vue initialization above
+// (i.e. $('#some-select').val() returns null just before Vue initialization,
+// and some value right after). Resetting the inner HTML of the element seems
+// to fix this.
+jQuery('select').each(function () {
+    jQuery(this).html(jQuery(this).html());
+});
+
+new MutationObserver(function (mutations, observer) {
+    var newDialogs =
+        document.querySelectorAll('body > .Dialog:not(.__vue_processed), ' +
+            'body .LayoutPopup:not(.__vue_processed)');
+
+    newDialogs.forEach(function (dialog) {
+        var fields = dialog.querySelectorAll('.Field.__vue_datetimepicker');
+
+        fields.forEach(function (field) {
+            new Vue({
+                el: field,
+                vuetify: new Vuetify({ theme: { disable: true } }),
+                components: {
+                    'datetimepicker': httpVueLoader('[% Config("Frontend::JavaScriptPath") | html %][% Data.JSDirectory | html %]centuran/datetimepicker.vue')
+                }
+            });
+
+            dialog.classList.add('__vue_processed');
+        });
+    });
+}).observe(document.body,
+    { attributes: false, childList: true, subtree: false });
+
+})();
+
+// Add custom class to action list items that should be followed by free space
+// (i.e. those which are the last in a group)
+$(function () {
+    $('.ActionRow .Actions li, .ItemActions .Actions li').each(function () {
+        if ($(this).next('li').find('> a, > span.ClusterLink').length == 0)
+            this.classList.add('cmt-item-action-link-last');
+    });
+});
+
+// On the TicketZoom screen, add custom classes to action list items that are
+// the first or last in a row (i.e. those which are wrapped to the next line)
+// for styling purposes
+if ($('.MainBox.TicketZoom').length > 0) {
+    window.addEventListener('resize', function () {
+        var items =
+            document.querySelectorAll('.Content .ActionRow .Actions > li');
+        items.forEach(function (item) {
+            var prevItem = item.previousElementSibling;
+            if (!prevItem)
+                return true;
+
+            var wrapped = prevItem.offsetLeft >= item.offsetLeft;
+            item.classList.toggle('cmt-item-action-link-first-in-row', wrapped);
+            prevItem.classList.toggle('cmt-item-action-link-last-in-row',
+                wrapped);
+        });
+    });
+
+    // Trigger the resize event to initialize the classes
+    window.dispatchEvent(new Event('resize'));
+}
+</script>
+
+</body>
+</html>

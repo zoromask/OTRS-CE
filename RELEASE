@@ -1,0 +1,5 @@
+PRODUCT = ((OTRS)) Community Edition
+VERSION = 6.0.41
+BUILDDATE = Tue 10 Dec 2024 09:42:11 AM CET
+BUILDHOST = build.dev.centuran.com
+COMMIT_ID = 0a674ad2fa8c61c889e708437432cfb1473c74cf
